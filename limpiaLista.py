@@ -1,24 +1,19 @@
 import pandas as pd
 import numpy as np
 
-# 1. Cargar los datos especificando el motor o intentando alternativas
-input_file = "hr_data_raw.xls"
+# 1. Cargar los datos (detecta si es CSV con extensión .xls o Excel real)
+input_file = "./Data/hr_data_raw.xls"
 
 try:
-    # Intentar con el motor por defecto para .xls antiguo
-    df = pd.read_excel(input_file, engine="xlrd")
+    # Como se ve en la captura que es texto CSV separado por comas:
+    df = pd.read_csv(input_file)
 except Exception:
     try:
-        # Si en realidad es un .xlsx renombrado a .xls
         df = pd.read_excel(input_file, engine="openpyxl")
-    except Exception:
-        # Si en realidad es un archivo CSV separado por comas o tabulaciones con extensión .xls
-        try:
-            df = pd.read_csv(input_file, sep=None, engine="python")
-        except Exception as e:
-            raise RuntimeError(f"No se pudo leer el archivo con ningún motor. Detalle: {e}")
+    except Exception as e:
+        raise RuntimeError(f"No se pudo cargar el archivo: {e}")
 
-# Mapeo de nombres de columnas originales a las nuevas
+# Mapeo de nombres de columnas
 column_mapping = {
     'Empleador ID': 'employee_id',
     'Primer Nombre': 'first_name',
@@ -33,32 +28,35 @@ column_mapping = {
     'Ciudad': 'city',
     'Calidad de trabajo': 'performance_rating'
 }
+
+# Si el CSV ya viene con encabezados en inglés o español, renombrar lo existente
 df = df.rename(columns=column_mapping)
 
 # --- LIMPIEZA Y TRANSFORMACIÓN DE COLUMNAS ---
 
-# 1. employee_id: Texto "E" + 5 dígitos, sin espacios, mayúsculas
-df['employee_id'] = df['employee_id'].astype(str).str.strip().str.upper()
+# 1. employee_id: Texto "E" + 5 dígitos
+if 'employee_id' in df.columns:
+    df['employee_id'] = df['employee_id'].astype(str).str.strip().str.upper()
 
-# 2. first_name: Title Case, sin espacios sobrantes
-df['first_name'] = df['first_name'].astype(str).str.strip().str.title()
+# 2. first_name & 3. last_name: Title Case
+if 'first_name' in df.columns:
+    df['first_name'] = df['first_name'].astype(str).str.strip().str.title()
+if 'last_name' in df.columns:
+    df['last_name'] = df['last_name'].astype(str).str.strip().str.title()
 
-# 3. last_name: Title Case, sin espacios sobrantes
-df['last_name'] = df['last_name'].astype(str).str.strip().str.title()
+# 4. gender: Mantiene categorías
+if 'gender' in df.columns:
+    df['gender'] = df['gender'].astype(str).str.strip()
 
-# 4. gender: Mantiene consistencia (Male, Female, Non-binary)
-df['gender'] = df['gender'].astype(str).str.strip()
+# 5. age: Entero
+if 'age' in df.columns:
+    df['age'] = pd.to_numeric(df['age'], errors='coerce').astype('Int64')
 
-# 5. age: Convertir a entero
-df['age'] = pd.to_numeric(df['age'], errors='coerce').astype('Int64')
-
-# 6. department: Estandarización a 10 categorías
+# 6. department: Estandarizar a 10 categorías
 def clean_department(dept):
     if pd.isna(dept) or str(dept).strip() == "":
         return "Unknown"
-    
     dept = str(dept).strip().lower()
-    
     if any(k in dept for k in ['sale', 'saless']):
         return "Sales"
     elif any(k in dept for k in ['mktg', 'markting', 'marketing']):
@@ -82,9 +80,10 @@ def clean_department(dept):
     else:
         return "Unknown"
 
-df['department'] = df['department'].apply(clean_department)
+if 'department' in df.columns:
+    df['department'] = df['department'].apply(clean_department)
 
-# 7. job_title: Title Case, corrección de dobles espacios y "VP"
+# 7. job_title: Title Case y "VP"
 def clean_job_title(title):
     if pd.isna(title):
         return title
@@ -92,9 +91,10 @@ def clean_job_title(title):
     words = [word.upper() if word.lower() == 'vp' else word for word in title.split()]
     return " ".join(words)
 
-df['job_title'] = df['job_title'].apply(clean_job_title)
+if 'job_title' in df.columns:
+    df['job_title'] = df['job_title'].apply(clean_job_title)
 
-# 8. salary: Limpieza, corrección de negativos y centinela (999999)
+# 8. salary: salary_usd (float) y salary (formateado)
 def process_salary_usd(val):
     if pd.isna(val):
         return np.nan
@@ -103,16 +103,15 @@ def process_salary_usd(val):
         num_val = float(s_val)
     except ValueError:
         return np.nan
-    
     if num_val == 999999:
         return np.nan
-    
     return abs(num_val)
 
-df['salary_usd'] = df['salary'].apply(process_salary_usd)
-df['salary'] = df['salary_usd'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else np.nan)
+if 'salary' in df.columns:
+    df['salary_usd'] = df['salary'].apply(process_salary_usd)
+    df['salary'] = df['salary_usd'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else np.nan)
 
-# 9. hire_date: Parseo condicional ("/" -> dd/mm/aaaa, "-" -> mm-dd-aaaa)
+# 9. hire_date: YYYY-MM-DD
 def parse_date(date_str):
     if pd.isna(date_str):
         return np.nan
@@ -127,27 +126,32 @@ def parse_date(date_str):
     except Exception:
         return np.nan
 
-df['hire_date'] = df['hire_date'].apply(parse_date)
+if 'hire_date' in df.columns:
+    df['hire_date'] = df['hire_date'].apply(parse_date)
 
 # 10. email: Minúsculas
-df['email'] = df['email'].astype(str).str.strip().str.lower()
+if 'email' in df.columns:
+    df['email'] = df['email'].astype(str).str.strip().str.lower()
 
-# 11. city: Limpieza de espacios
-df['city'] = df['city'].astype(str).str.strip()
+# 11. city
+if 'city' in df.columns:
+    df['city'] = df['city'].astype(str).str.strip()
 
-# 12. performance_rating: Convertir a entero (1-5)
-df['performance_rating'] = pd.to_numeric(df['performance_rating'], errors='coerce').astype('Int64')
+# 12. performance_rating
+if 'performance_rating' in df.columns:
+    df['performance_rating'] = pd.to_numeric(df['performance_rating'], errors='coerce').astype('Int64')
 
-# Reorganizar columnas
-column_order = [
+# Reordenar columnas si existen
+desired_columns = [
     'employee_id', 'first_name', 'last_name', 'gender', 'age',
     'department', 'job_title', 'salary_usd', 'salary', 'hire_date',
     'email', 'city', 'performance_rating'
 ]
-df = df[column_order]
+existing_cols = [c for c in desired_columns if c in df.columns]
+df = df[existing_cols]
 
-# --- GUARDAR ARCHIVO LIMPIO ---
-output_file = "Data_Raw_Limpia.xlsx"
-df.to_excel(output_file, index=False)
+# --- GUARDAR EN FORMATO EXCEL (.xlsx) ---
+output_file = "./CleanData/Data_Raw_Limpia.xlsx"
+df.to_excel(output_file, index=False, engine="openpyxl")
 
 print(f"Limpieza completada con éxito. Archivo guardado como '{output_file}'.")
